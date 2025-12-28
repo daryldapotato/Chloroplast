@@ -141,7 +141,7 @@ class DroneViewer:
             # overlay info
             info_text = f"Camera: {self.current_cam} | Res: {frame.shape[1]}x{frame.shape[0]} | FPS: {self.fps:.1f}"
             cv2.putText(frame_upscaled, info_text, (10, 30),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 0), 2)
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 0), 2)
 
             cv2.imshow(self.window_name, frame_upscaled)
             key = cv2.waitKey(1) & 0xFF
