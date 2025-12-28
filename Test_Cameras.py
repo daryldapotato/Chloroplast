@@ -144,12 +144,14 @@ class CameraViewer:
             # Detect hands with MediaPipe
             rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
 
-            has_hand, x_min, y_min, x_max, y_max = self.hlp.process_landmarks(rgb_frame, frame, self.cap)
+            has_hand, x_min, y_min, x_max, y_max, z_min, z_max = self.hlp.process_landmarks(rgb_frame, frame, self.cap)
 
             if has_hand:
                 cv2.rectangle(frame, (x_min, y_min), (x_max, y_max), (0, 255, 0), 2)
-                cx, cy = (x_min + x_max) // 2, (y_min + y_max) // 2
+                cx, cy, cz = (x_min + x_max) // 2, (y_min + y_max) // 2, z_min + z_max // 2
                 cv2.circle(frame, (cx, cy), 5, (0, 0, 255), -1)
+                cv2.putText(frame, f"Z: {cz}", (cx + 10, cy + 20),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 2)
 
             # Compute FPS
             current_time = time.time()

@@ -14,9 +14,9 @@ class HandLandmarkProcessor:
             base_options=base_options,
             running_mode=vision.RunningMode.VIDEO,
             num_hands=1,
-            min_hand_detection_confidence=0.34,
-            min_hand_presence_confidence=0.34,
-            min_tracking_confidence=0.34
+            min_hand_detection_confidence=0.4,
+            min_hand_presence_confidence=0.4,
+            min_tracking_confidence=0.2
         )
         self.hand_landmarker = vision.HandLandmarker.create_from_options(options)
 
@@ -37,9 +37,11 @@ class HandLandmarkProcessor:
 
             x_coords = [lm.x * w for lm in hand]
             y_coords = [lm.y * h for lm in hand]
+            z_coords = [lm.z * w for lm in hand]
             x_min, x_max = int(min(x_coords)), int(max(x_coords))
             y_min, y_max = int(min(y_coords)), int(max(y_coords))
+            z_min, z_max = int(min(z_coords)), int(max(z_coords))
 
-            return True, x_min, y_min, x_max, y_max
+            return True, x_min, y_min, x_max, y_max, z_min, z_max
         else:
-            return False, 0, 0, 0, 0
+            return False, 0, 0, 0, 0, 0, 0
