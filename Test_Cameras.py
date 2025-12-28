@@ -1,46 +1,46 @@
 import cv2
 import socket
 import time
+from Hand_Landmark_Processing import HandLandmarkProcessor as hlp
 
 # Drone info
 DRONE_IP = "192.168.1.1"
 DRONE_UDP_PORT = 7099
 RTSP_URL = "rtsp://192.168.1.1:7070/webcam"
 
-# Camera switch payloads (matches app's debugSend usage)
+# Camera switch payloads
 CAMERA_1_CMD = bytes([6, 1])
 CAMERA_2_CMD = bytes([6, 2])
 
-def udp_send(raw_bytes: bytes, addr=(DRONE_IP, DRONE_UDP_PORT), bind_if_needed=False):
+def udp_send(raw_bytes: bytes, addr=(DRONE_IP, DRONE_UDP_PORT)):
     """Send raw bytes over UDP to the drone."""
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     try:
-        if bind_if_needed:
-            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-            sock.bind(('', 0))
         sock.sendto(raw_bytes, addr)
     finally:
         sock.close()
 
-class DroneViewer:
+class CameraViewer:
     def __init__(self, rtsp_url=RTSP_URL):
         self.rtsp_url = rtsp_url
         self.cap = None
+        self.is_drone = False
         self.open_stream()
 
         self.current_cam = 1
         self.window_name = "DRONE"
         cv2.namedWindow(self.window_name, cv2.WINDOW_NORMAL)
-        self.WINDOW_WIDTH = 854
+        self.WINDOW_WIDTH = 640
         self.WINDOW_HEIGHT = 480
         cv2.resizeWindow(self.window_name, self.WINDOW_WIDTH, self.WINDOW_HEIGHT)
 
         self.prev_time = time.time()
         self.fps = 0.0
+        
+        self.hlp = hlp()
 
     def open_stream(self, reopen_delay=0.3):
-        """Open (or reopen) the RTSP stream."""
-        # Release existing capture if any
+        """Open RTSP stream, fallback to webcam if it fails."""
         if self.cap is not None:
             try:
                 self.cap.release()
@@ -48,33 +48,42 @@ class DroneViewer:
                 pass
             time.sleep(reopen_delay)
 
-        # Try opening with FFMPEG backend (works reliably in many setups)
+        # Try drone RTSP first
         self.cap = cv2.VideoCapture(self.rtsp_url, cv2.CAP_FFMPEG)
-        # fallback: try default backend if FFMPEG didn't open
         if not self.cap.isOpened():
             time.sleep(0.2)
             self.cap = cv2.VideoCapture(self.rtsp_url)
 
-        if not self.cap.isOpened():
-            raise RuntimeError(f"Failed to open RTSP stream: {self.rtsp_url}")
+        if self.cap.isOpened():
+            self.is_drone = True
+            print("Connected to drone RTSP stream")
+        else:
+            # Fallback to webcam
+            print("Failed to connect to drone; falling back to webcam")
+            self.cap = cv2.VideoCapture(0)
+            if self.cap.isOpened():
+                self.is_drone = False
+                print("Webcam opened successfully")
+            else:
+                raise RuntimeError("Failed to open RTSP stream and webcam")
 
     def switch_camera(self):
-        """Toggle between camera 1 and 2 using the app's camera switch bytes."""
+        """Toggle between camera 1 and 2 (drone only)."""
+        if not self.is_drone:
+            print("Camera switching only available for drone feed")
+            return
+
         new_cam = 2 if self.current_cam == 1 else 1
         print(f"Switching to Camera {new_cam}...")
 
-        # send raw debugSend bytes (no prefix) — matches app: debugSend(new byte[]{6,1}) / {6,2}
         if new_cam == 1:
             udp_send(CAMERA_1_CMD)
         else:
             udp_send(CAMERA_2_CMD)
 
-        # apps typically stop and restart their RTSP playback during camera switch.
-        # re-open RTSP stream to pick up the new camera feed.
         try:
             self.open_stream(reopen_delay=0.7)
         except RuntimeError:
-            # try once more
             time.sleep(0.5)
             try:
                 self.open_stream(reopen_delay=0.7)
@@ -86,31 +95,28 @@ class DroneViewer:
     def run(self):
         print("Press 'c' to switch camera, 'q' to quit.")
         reconnect_attempts = 0
-        MAX_RECONNECTS = 5
+        MAX_RECONNECTS = 5   
 
         while True:
             if self.cap is None or not self.cap.isOpened():
-                # try to reopen stream (backoff)
                 reconnect_attempts += 1
                 if reconnect_attempts > MAX_RECONNECTS:
                     print("Too many reconnect attempts, exiting.")
                     break
                 try:
-                    print("RTSP closed; attempting reconnect", reconnect_attempts)
+                    print(f"Stream closed; attempting reconnect {reconnect_attempts}")
                     self.open_stream()
                 except RuntimeError as e:
                     print("Reconnect failed:", e)
                     time.sleep(0.8)
                     continue
-            # read frame
+
             ret, frame = self.cap.read()
             if not ret or frame is None:
-                # try a short wait and reconnect if repeated
                 time.sleep(0.05)
-                # allow a couple of consecutive misses before trying to reopen
                 reconnect_attempts += 1
                 if reconnect_attempts >= 8:
-                    print("No frames. Reopening RTSP stream...")
+                    print("No frames. Reopening stream...")
                     try:
                         self.open_stream()
                         reconnect_attempts = 0
@@ -123,25 +129,67 @@ class DroneViewer:
                     continue
             reconnect_attempts = 0
 
-            # rotate 90 degrees clockwise to correct orientation (as in your script)
-            try:
-                frame = cv2.rotate(frame, cv2.ROTATE_90_CLOCKWISE)
-            except Exception:
-                pass
+            # Rotate if drone, flip for webcam
+            if self.is_drone:
+                try:
+                    frame = cv2.rotate(frame, cv2.ROTATE_90_CLOCKWISE)
+                except Exception:
+                    pass
+            else:
+                try:
+                    frame = cv2.flip(frame, 1)
+                except Exception:
+                    pass
 
-            # compute FPS
+            # Detect hands with MediaPipe
+            rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+
+            has_hand, x_min, y_min, x_max, y_max = self.hlp.process_landmarks(rgb_frame, frame, self.cap)
+
+            if has_hand:
+                cv2.rectangle(frame, (x_min, y_min), (x_max, y_max), (0, 255, 0), 2)
+                cx, cy = (x_min + x_max) // 2, (y_min + y_max) // 2
+                cv2.circle(frame, (cx, cy), 5, (0, 0, 255), -1)
+
+            # Compute FPS
             current_time = time.time()
             dt = current_time - self.prev_time if (current_time - self.prev_time) > 1e-6 else 1e-6
-            self.fps = 0.85 * self.fps + 0.15 * (1.0 / dt)  # smoothed fps
+            self.fps = 0.85 * self.fps + 0.15 * (1.0 / dt)
             self.prev_time = current_time
 
-            # upscale to window size
-            frame_upscaled = cv2.resize(frame, (self.WINDOW_WIDTH, self.WINDOW_HEIGHT), interpolation=cv2.INTER_CUBIC)
+            # Upscale to window size while maintaining aspect ratio
+            h, w = frame.shape[:2]
+            aspect_ratio = w / h
+            window_aspect = self.WINDOW_WIDTH / self.WINDOW_HEIGHT
+            
+            if aspect_ratio > window_aspect:
+                new_w = self.WINDOW_WIDTH
+                new_h = int(self.WINDOW_WIDTH / aspect_ratio)
+            else:
+                new_h = self.WINDOW_HEIGHT
+                new_w = int(self.WINDOW_HEIGHT * aspect_ratio)
+            
+            frame_upscaled = cv2.resize(frame, (new_w, new_h), interpolation=cv2.INTER_CUBIC)
+            
+            # Center the frame on a black background
+            canvas = cv2.imread(None)
+            canvas = frame_upscaled.copy() if frame_upscaled.shape[:2] == (self.WINDOW_HEIGHT, self.WINDOW_WIDTH) else cv2.copyMakeBorder(
+                frame_upscaled,
+                (self.WINDOW_HEIGHT - new_h) // 2,
+                (self.WINDOW_HEIGHT - new_h) - (self.WINDOW_HEIGHT - new_h) // 2,
+                (self.WINDOW_WIDTH - new_w) // 2,
+                (self.WINDOW_WIDTH - new_w) - (self.WINDOW_WIDTH - new_w) // 2,
+                cv2.BORDER_CONSTANT,
+                value=(0, 0, 0)
+            )
+            frame_upscaled = canvas
 
-            # overlay info
-            info_text = f"Camera: {self.current_cam} | Res: {frame.shape[1]}x{frame.shape[0]} | FPS: {self.fps:.1f}"
+            # Overlay info
+            source = "Drone" if self.is_drone else "Webcam"
+            info_text = f"Source: {source} | Camera: {self.current_cam} | Res: {frame.shape[1]}x{frame.shape[0]} | FPS: {self.fps:.1f}"
+
             cv2.putText(frame_upscaled, info_text, (10, 30),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 0), 2)
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 0), 2)
 
             cv2.imshow(self.window_name, frame_upscaled)
             key = cv2.waitKey(1) & 0xFF
@@ -151,18 +199,19 @@ class DroneViewer:
             elif key == ord('c'):
                 self.switch_camera()
 
-        # cleanup
+        # Cleanup
         try:
             if self.cap is not None:
                 self.cap.release()
         except Exception:
             pass
         cv2.destroyAllWindows()
+        self.hlp.close()
 
 
 if __name__ == "__main__":
     try:
-        viewer = DroneViewer(RTSP_URL)
+        viewer = CameraViewer(RTSP_URL)
         viewer.run()
     except Exception as e:
         print("Fatal error:", e)
