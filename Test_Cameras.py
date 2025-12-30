@@ -1,6 +1,7 @@
 import cv2
 import socket
 import time
+import math
 from Hand_Landmark_Processing import HandLandmarkProcessor as hlp
 
 # Drone info
@@ -11,6 +12,10 @@ RTSP_URL = "rtsp://192.168.1.1:7070/webcam"
 # Camera switch payloads
 CAMERA_1_CMD = bytes([6, 1])
 CAMERA_2_CMD = bytes([6, 2])
+
+# Drone control values
+DEAD_ZONE = 0.15
+MAX_VELOCITY = 100
 
 def udp_send(raw_bytes: bytes, addr=(DRONE_IP, DRONE_UDP_PORT)):
     """Send raw bytes over UDP to the drone."""
@@ -152,6 +157,19 @@ class CameraViewer:
                 cv2.circle(frame, (cx, cy), 5, (0, 0, 255), -1)
                 cv2.putText(frame, f"Z: {cz}", (cx + 10, cy + 20),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 2)
+                
+                # Drone control logic
+                frame_center_x, frame_center_y = frame.shape[1] // 2, frame.shape[0] // 2
+                distance = math.hypot(cx - frame_center_x, cy - frame_center_y)
+
+                if distance > DEAD_ZONE * frame.shape[0]:
+                    move_x = (cx - frame_center_x) / distance
+                    move_y = (cy - frame_center_y) / distance
+                else:
+                    move_x, move_y = 0, 0
+                
+                cv2.circle(frame, (frame_center_x, frame_center_y), round(DEAD_ZONE * frame.shape[0]), (0, 255, 0), 3)
+                cv2.arrowedLine(frame, (frame_center_x, frame_center_y), (frame_center_x + round(move_x * MAX_VELOCITY), frame_center_y + round(move_y * MAX_VELOCITY)), (255, 255, 0), 3)
 
             # Compute FPS
             current_time = time.time()
